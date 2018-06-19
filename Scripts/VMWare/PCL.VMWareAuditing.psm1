@@ -57,7 +57,7 @@ function Compare-VMState {
                 }
                 catch{
                     Write-Warning -Message "Could not resolve IP Address for host {0}" -f $fqdn
-                    $IPFromDNS = ''
+                    $IPFromDNS = '' #turning SSL back on, give me one sec
                 }
             }
         }
