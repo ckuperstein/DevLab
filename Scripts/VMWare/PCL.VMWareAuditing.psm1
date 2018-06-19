@@ -24,11 +24,24 @@ function Compare-VMState {
         # DNS Zone Name
         [Parameter(Mandatory=$true)] # I'll deal with param sets later
         [string[]]
-        $Zone
+        $Zone,
+        # Check AD
+        [Parameter(Mandatory=$false)]
+        [switch]
+        $CheckAD
     )
     
     begin {
         $ErrorActionPreference = 'Stop'
+        try{
+            $Modules = @('ActiveDirectory','VMWare.PowerCLI')
+            foreach ($M in $Modules){
+                Import-Module $M
+            }
+        }
+        catch {
+            Write-Error -Message "Could not import one or more modules"
+        }
     }
     
     process {
@@ -50,16 +63,28 @@ function Compare-VMState {
         }
 
         foreach ($VM in $VMs){
+            $fqdn = ($VM + '.' + $Zone)
+
             if ($CheckDNS){
-                $fqdn = ($VM + '.' + $Zone)
                 try{
                     $IPFromDNS = [System.Net.Dns]::GetHostAddresses($fqdn)
                 }
                 catch{
                     Write-Warning -Message "Could not resolve IP Address for host {0}" -f $fqdn
-                    $IPFromDNS = '' #turning SSL back on, give me one sec
+                    $IPFromDNS = $null
                 }
             }
+
+            if ($CheckAD){
+                try{
+                    $LastLogonTimeStamp = [DateTime]::FromFileTime((Get-ADComputer -Identity $fqdn -Properties LastLogonTimeStamp).LastLogonTimeStamp)
+                }
+                catch{
+                    Write-Warning -Message "Could not retrieve time stamp from AD"
+                }
+            }
+
+
         }
         
     }
