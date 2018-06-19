@@ -57,6 +57,7 @@ function Compare-VMState {
 
         try{
             $VMs = Get-VM
+            $Today = Get-Date
         }
         catch {
             Write-Warning -Message "Could not retrieve VMs from one or more connected servers."
@@ -77,10 +78,15 @@ function Compare-VMState {
 
             if ($CheckAD){
                 try{
-                    $LastLogonTimeStamp = [DateTime]::FromFileTime((Get-ADComputer -Identity $fqdn -Properties LastLogonTimeStamp).LastLogonTimeStamp)
+                    $ADObj = Get-ADComputer -Identity $fqdn -Properties lastLogonTimeStamp,pwdLastSet,lastLogon | Select-Object -Property lastLogonTimeStamp,pwdLastSet,lastLogon
+                    $PropNames = ($ADObj | Get-Member | Where-Object -Property MemberType -EQ 'NoteProperty').Name
+                    $ADHashMap = @{}
+                    foreach ($Prop in $PropNames){
+                        $ADHashMap.Add($Prop,[DateTime]::FromFileTime($ADObj.$Prop))
+                    }
                 }
                 catch{
-                    Write-Warning -Message "Could not retrieve time stamp from AD"
+                    Write-Warning -Message "Could not retrieve time stamps from AD"
                 }
             }
 
