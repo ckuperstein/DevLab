@@ -28,7 +28,11 @@ function Compare-VMState {
         # Check AD
         [Parameter(Mandatory=$false)]
         [switch]
-        $CheckAD
+        $CheckAD,
+        # Pings the VMs
+        [Parameter(Mandatory=$false)]
+        [switch]
+        $Ping
     )
     
     begin {
@@ -71,24 +75,33 @@ function Compare-VMState {
                     $IPFromDNS = [System.Net.Dns]::GetHostAddresses($fqdn)
                 }
                 catch{
-                    Write-Warning -Message "Could not resolve IP Address for host {0}" -f $fqdn
+                    Write-Warning -Message "Could not resolve IP Address for host $fqdn"
                     $IPFromDNS = $null
+                }
+
+                try{
+                    $HostnameFromDNS = [System.Net.Dns]::GetHostAddresses($VM.Guest.IPAddress[0])
+                }
+                catch{
+                    Write-Warning -Message "Could not resolve a hostname from IP: {0} on {1}" -f $VM.Guest.IPAddress[0],$fqdn
+                    $HostnameFromDNS = $null
                 }
             }
 
             if ($CheckAD){
                 try{
-                    $ADObj = Get-ADComputer -Identity $fqdn -Properties lastLogonTimeStamp,pwdLastSet,lastLogon | Select-Object -Property lastLogonTimeStamp,pwdLastSet,lastLogon
-                    $PropNames = ($ADObj | Get-Member | Where-Object -Property MemberType -EQ 'NoteProperty').Name
-                    $ADHashMap = @{}
-                    foreach ($Prop in $PropNames){
-                        $ADHashMap.Add($Prop,[DateTime]::FromFileTime($ADObj.$Prop))
-                    }
+                    $ADObj = Get-ADComputer -Identity $fqdn -Properties lastLogonTimeStamp,pwdLastSet,lastLogon
                 }
                 catch{
-                    Write-Warning -Message "Could not retrieve time stamps from AD"
+                    Write-Warning -Message "Could not retrieve AD Object for $fqdn"
                 }
             }
+
+            if ($Ping){
+                
+            }
+
+
 
 
         }
