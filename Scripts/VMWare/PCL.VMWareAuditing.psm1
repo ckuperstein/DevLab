@@ -17,31 +17,29 @@ function Compare-VMState {
         [Parameter(Mandatory=$true,Position=0,ParameterSetName='Host-DNS')]
         [string[]]
         $Server,
+        # Credentials
+        [Parameter(Mandatory=$true,Position=1,ParameterSetName='Host-DNS')]
+        [pscredential]
+        $Credential,
         # Check DNS
-        [Parameter(Mandatory=$false,Position=1,ParameterSetName='Host-DNS')]
+        [Parameter(Mandatory=$false,Position=2,ParameterSetName='Host-DNS')]
         [switch]
         $CheckDNS,
-        # DNS Zone Name
-        [Parameter(Mandatory=$true)] # I'll deal with param sets later
-        [string[]]
-        $Zone,
         # Check AD
-        [Parameter(Mandatory=$false)]
+        [Parameter(Mandatory=$false,Position=3,ParameterSetName='Host-DNS')]
         [switch]
         $CheckAD,
-        # Pings the VMs
-        [Parameter(Mandatory=$false)]
-        [switch]
-        $Ping
+        # Export to this file path
+        [Parameter(Mandatory=$true,Position=4,ParameterSetName='Host-DNS')]
+        [string]
+        $ExportPath
     )
     
     begin {
         $ErrorActionPreference = 'Stop'
         try{
-            $Modules = @('ActiveDirectory','VMWare.PowerCLI')
-            foreach ($M in $Modules){
-                Import-Module $M
-            }
+            Import-Module ActiveDirectory
+            Import-Module VMware.PowerCLI
         }
         catch {
             Write-Error -Message "Could not import one or more modules"
@@ -49,10 +47,9 @@ function Compare-VMState {
     }
     
     process {
-
         foreach ($Hostname in $Server){
             try{
-                Connect-VIServer $Hostname
+                Connect-VIServer $Hostname -Credential $Credential
             }
             catch{
                 Write-Error -Message "Could not connect to $Hostname"
@@ -62,52 +59,94 @@ function Compare-VMState {
         try{
             $VMs = Get-VM
             $Today = Get-Date
+            $ConfNameContext = Get-ADRootDSE | Select-Object -Expandproperty configurationNamingContext
+            [int]$TombStoneThreshold = (Get-ADObject -Identity “CN=Directory Service,CN=Windows NT,CN=Services,$ConfNameContext” -properties tombstonelifetime).tombstonelifetime
         }
         catch {
             Write-Warning -Message "Could not retrieve VMs from one or more connected servers."
         }
-
+        
+        $VMResults = [System.Collections.ArrayList]::New()
+        $t = ($VMs | Measure-Object).Count
         foreach ($VM in $VMs){
-            $fqdn = ($VM + '.' + $Zone)
+            $fqdn = $VM.Guest.Hostname
+            $i = [array]::IndexOf($VMs,$VM)
+            Write-Progress -Activity 'Analyzing VM Health State' -Status ('Running ' + [math]::Round(($i/$t*100),2) + '% | ' + "$i/$t Machines Checked") -PercentComplete ($i/$t*100)
 
             if ($CheckDNS){
                 try{
-                    $IPFromDNS = [System.Net.Dns]::GetHostAddresses($fqdn)
+                    if ($fqdn -ne $null){
+                        $IPFromDNS = [System.Net.Dns]::GetHostAddresses($fqdn).IPAddressToString
+                    }
                 }
                 catch{
-                    Write-Warning -Message "Could not resolve IP Address for host $fqdn"
+                    Write-Warning -Message ("Could not resolve IP Address for host $fqdn")
                     $IPFromDNS = $null
                 }
 
                 try{
-                    $HostnameFromDNS = [System.Net.Dns]::GetHostAddresses($VM.Guest.IPAddress[0])
+                    if ($fqdn -ne $null){
+                        $HostnameFromDNS = [System.Net.Dns]::GetHostEntry($VM.Guest.IPAddress[0]).Hostname
+                    }
                 }
                 catch{
-                    Write-Warning -Message "Could not resolve a hostname from IP: {0} on {1}" -f $VM.Guest.IPAddress[0],$fqdn
+                    Write-Warning -Message ("Could not resolve a hostname in DNS from $fqdn")
                     $HostnameFromDNS = $null
                 }
             }
 
             if ($CheckAD){
                 try{
-                    $ADObj = Get-ADComputer -Identity $fqdn -Properties lastLogonTimeStamp,pwdLastSet,lastLogon
+                    if ($fqdn -ne $null){
+                        $ServerString = [System.Collections.ArrayList]::New($fqdn.Split('.'))
+                        $ComputerName = $ServerString[0]
+                        $ServerString.Remove($ServerString[0])
+                        $SearchBase = [System.Collections.ArrayList]::New()
+                        foreach ($i in $ServerString){
+                            $SearchBase.Add('DC='+$i) | Out-Null
+                        }
+                        $SearchBase = $SearchBase -Join ','
+                        $ServerString = $ServerString -Join '.'
+
+                        Write-Information "Getting AD Object for $fqdn"
+                        $ADObj = Get-ADComputer -Filter ('Name -like "{0}"' -f $ComputerName) -SearchBase $SearchBase -Server $ServerString -Properties lastLogonTimeStamp,pwdLastSet
+                        $plsd = [DateTime]::FromFileTime($ADObj.pwdLastSet)
+                        $lld = [DateTime]::FromFileTime($ADObj.lastLogonTimeStamp)
+                        $pwdLastSetDiff = ($Today - $plsd)
+                        $lastLogonDiff = ($Today - $lld)
+                    }
+                    else {
+                        $pwdLastSetDiff = $null
+                        $lastLogonDiff = $null
+                    }
                 }
                 catch{
-                    Write-Warning -Message "Could not retrieve AD Object for $fqdn"
+                    Write-Warning -Message ("Could not retrieve AD Object for $fqdn")
                 }
             }
-
-            if ($Ping){
-                
+            
+            # Time to start checking tombstone status
+            $VMResultObj = [PSCustomObject]@{
+                GuestName = $VM.Guest.Hostname
+                GuestDNSName = (@{$true='';$false=$HostnameFromDNS}[$HostnameFromDNS -eq $null])
+                GuestId = $VM.Guest.RuntimeGuestId
+                VmName = $VM.Name
+                VmId = $VM.Id
+                PasswordLastSetDays = $pwdLastSetDiff.Days
+                LastLogonDays = $lastLogonDiff.Days
+                Tombstoned = (@{$true='Yes';$false='No'}[(($pwdLastSetDiff.Days -gt $TombStoneThreshold) -and ($lastLogonDiff.Days -gt $TombStoneThreshold))])
+                ADStatus = (@{$true='Present';$false='Absent'}[$ADObj -ne $null])
+                GuestIPAddress = $VM.Guest.IPAddress[0]
+                GuestDNSIPAddress = ($IPFromDNS -Join ',')
             }
 
-
-
-
+            $VMResults.Add($VMResultObj) | Out-Null
         }
         
     }
     
     end {
+        $VMResults | Export-CSV $ExportPath -NoTypeInformation
+        return $VMResults
     }
 }
