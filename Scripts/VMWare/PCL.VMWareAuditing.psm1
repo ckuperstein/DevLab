@@ -10,7 +10,7 @@ Reaches out to each vSphere server/host and pulls the VMs off to check against:
 -AD LastPasswordSetDate
 -TCP/IP Status (Ping, WMI if available)
 #>
-function Compare-VMState {
+function Get-VMHealthStatus {
     [CmdletBinding(DefaultParameterSetName='Host-DNS')]
     param (
         # Host
@@ -52,7 +52,7 @@ function Compare-VMState {
                 Connect-VIServer $Hostname -Credential $Credential
             }
             catch{
-                Write-Error -Message "Could not connect to $Hostname"
+                Write-Error -Message "Could not connect to $Hostname" -ErrorAction 'Continue'
             }
         }
 
